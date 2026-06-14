@@ -1,52 +1,46 @@
 import admin from 'firebase-admin';
 
-// Инициализируем Firebase Admin, если он еще не запущен
+// Инициализация Firebase Admin
 if (!admin.apps.length) {
-    try {
-        // Мы берем ключ из переменной окружения Vercel
-        const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-        admin.initializeApp({
-            credential: admin.credential.cert(serviceAccount)
-        });
-    } catch (e) {
-        console.error("Ошибка инициализации:", e);
-    }
+    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount)
+    });
 }
 
 const db = admin.firestore();
 
 export default async function handler(req, res) {
-    // 1. Разрешаем только POST запросы
-    if (req.method !== 'POST') {
-        return res.status(405).json({ error: 'Method not allowed' });
-    }
-
-    // 2. Проверка секретного ключа (чтобы никто чужой не спамил в базу)
+    // 1. Общая защита
     if (req.headers['x-api-key'] !== process.env.API_SECRET_KEY) {
-        return res.status(403).json({ error: 'Forbidden' });
+        return res.status(403).json({ error: 'Unauthorized: Invalid API Key' });
     }
 
-    try {
-        const { gameID, nickName, status, logText, moderationStatus } = req.body;
+    const { method } = req;
 
-        if (!gameID || !nickName) {
-            return res.status(400).json({ error: 'Missing required fields' });
-        }
+    // 2. GET: Проверка статуса (для скрипта при заходе игрока)
+    if (method === 'GET') {
+        const userId = req.headers['x-player-id'];
+        if (!userId) return res.status(400).json({ error: 'Missing x-player-id' });
+        
+        const doc = await db.collection('appeals').doc(String(userId)).get();
+        return res.status(200).json(doc.exists ? doc.data() : { status: "unbanned" });
+    }
 
-        // 3. Записываем данные в Firestore
-        // Код использует projectId из твоего JSON-ключа автоматически
-        await db.collection('appeals').doc(String(gameID)).set({
+    // 3. POST: Создание/Обновление заявки
+    if (method === 'POST') {
+        const { userId, nickName, logText } = req.body;
+        if (!userId || !nickName) return res.status(400).json({ error: 'Missing fields' });
+
+        await db.collection('appeals').doc(String(userId)).set({
             nickName: nickName,
-            status: status || "NotSubmitted",
-            logText: logText || null,
-            moderationStatus: moderationStatus || "New",
+            logText: logText || "",
+            moderationStatus: "New", // Статус по умолчанию
             updatedAt: admin.firestore.FieldValue.serverTimestamp()
         }, { merge: true });
 
         return res.status(200).json({ success: true });
-
-    } catch (error) {
-        console.error("Firestore Error:", error);
-        return res.status(500).json({ error: 'Internal server error' });
     }
+
+    return res.status(405).json({ error: 'Method not allowed' });
 }
