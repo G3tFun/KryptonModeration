@@ -27,15 +27,21 @@ export default async function handler(req, res) {
         return res.status(200).json(doc.exists ? doc.data() : { status: "unbanned" });
     }
 
-    // 3. POST: Создание/Обновление заявки
+// --- ЛОГИКА POST (Подача апелляции) ---
     if (method === 'POST') {
+        // Добавляем проверку: если body пустой, возвращаем ошибку, а не падаем
+        if (!req.body) return res.status(400).json({ error: 'Body is missing' });
+        
         const { userId, nickName, logText } = req.body;
-        if (!userId || !nickName) return res.status(400).json({ error: 'Missing fields' });
+        
+        if (!userId || !nickName) {
+            return res.status(400).json({ error: 'Missing required fields' });
+        }
 
         await db.collection('appeals').doc(String(userId)).set({
             nickName: nickName,
-            logText: logText || "",
-            moderationStatus: "New", // Статус по умолчанию
+            logText: logText || "No logs provided",
+            moderationStatus: "New",
             updatedAt: admin.firestore.FieldValue.serverTimestamp()
         }, { merge: true });
 
