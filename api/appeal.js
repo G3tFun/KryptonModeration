@@ -15,62 +15,60 @@ if (!admin.apps.length) {
 const db = admin.firestore();
 
 export default async function handler(req, res) {
-    // 1. Защита API
-    const API_SECRET = req.headers['x-api-key'];
-    if (API_SECRET !== process.env.API_SECRET_KEY) {
+    const { method } = req;
+    const API_KEY = req.headers['x-api-key'];
+    const ADMIN_KEY = req.headers['x-admin-key'];
+
+    // 1. ПРОВЕРКА ДОСТУПА
+    // Для Roblox используем API_KEY, для сайта-админки ADMIN_KEY
+    if (API_KEY !== process.env.API_SECRET_KEY && ADMIN_KEY !== process.env.ADMIN_SECRET) {
         return res.status(403).json({ error: 'Unauthorized' });
     }
 
-    const { method } = req;
-
-    // 2. GET: Проверка статуса игрока
-    // Ожидаемые заголовки: x-game-id, x-player-id
+    // 2. GET: Проверка статуса (для Roblox) ИЛИ Получение всех заявок (для Админки)
     if (method === 'GET') {
         const gameID = req.headers['x-game-id'];
+        
+        // Если передан x-admin-key — отдаем список всех игроков для админки
+        if (ADMIN_KEY === process.env.ADMIN_SECRET) {
+            if (!gameID) return res.status(400).json({ error: 'Missing x-game-id' });
+            
+            const snapshot = await db.collection('appeals').doc(String(gameID)).collection('players').get();
+            const players = snapshot.docs.map(doc => ({ userId: doc.id, ...doc.data() }));
+            return res.status(200).json(players);
+        }
+
+        // Если обычный запрос от Roblox
         const userId = req.headers['x-player-id'];
+        if (!gameID || !userId) return res.status(400).json({ error: 'Missing identifiers' });
 
-        if (!gameID || !userId) {
-            return res.status(400).json({ error: 'Missing x-game-id or x-player-id' });
-        }
-
-        try {
-            const doc = await db.collection('appeals')
-                .doc(String(gameID))
-                .collection('players')
-                .doc(String(userId))
-                .get();
-
-            return res.status(200).json(doc.exists ? doc.data() : { status: "unbanned" });
-        } catch (error) {
-            return res.status(500).json({ error: error.message });
-        }
+        const doc = await db.collection('appeals').doc(String(gameID)).collection('players').doc(String(userId)).get();
+        return res.status(200).json(doc.exists ? doc.data() : { moderationStatus: "unbanned" });
     }
 
-    // 3. POST: Создание/Обновление апелляции
-    // Ожидаемый JSON Body: { "gameID": "...", "userId": "...", "nickName": "...", "logText": "..." }
+    // 3. POST: Создание апелляции (Roblox) ИЛИ Обновление статуса (Админка)
     if (method === 'POST') {
-        const { gameID, userId, nickName, logText } = req.body;
+        const { gameID, userId, nickName, logText, moderationStatus } = req.body;
 
-        if (!gameID || !userId || !nickName) {
-            return res.status(400).json({ error: 'Missing required fields' });
-        }
+        if (!gameID || !userId) return res.status(400).json({ error: 'Missing gameID or userId' });
 
-        try {
-            await db.collection('appeals')
-                .doc(String(gameID))
-                .collection('players')
-                .doc(String(userId))
-                .set({
-                    nickName: nickName,
-                    logText: logText || "",
-                    moderationStatus: "New",
-                    updatedAt: admin.firestore.FieldValue.serverTimestamp()
-                }, { merge: true });
+        const playerRef = db.collection('appeals').doc(String(gameID)).collection('players').doc(String(userId));
 
+        // Если админ обновляет статус
+        if (ADMIN_KEY === process.env.ADMIN_SECRET && moderationStatus) {
+            await playerRef.update({ moderationStatus: moderationStatus, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
             return res.status(200).json({ success: true });
-        } catch (error) {
-            return res.status(500).json({ error: error.message });
         }
+
+        // Если игрок подает апелляцию
+        await playerRef.set({
+            nickName: nickName,
+            logText: logText || "",
+            moderationStatus: "InModeration", // Автоматически ставим статус "На проверке"
+            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        }, { merge: true });
+
+        return res.status(200).json({ success: true });
     }
 
     return res.status(405).json({ error: 'Method not allowed' });
